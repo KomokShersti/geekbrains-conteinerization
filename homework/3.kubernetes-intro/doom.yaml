@@ -23,4 +23,3 @@ spec:
         ports:
         - protocol: TCP
           containerPort: 5900
-      restartPolicy: Always #only Always is supported 
