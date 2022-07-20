@@ -1,0 +1,62 @@
+variables:
+  K8S_API_URL: https://kubernetes.default
+
+stages:
+  - test
+  - build
+  - deploy
+
+test:
+  stage: test
+  image: golang:1.14
+  script:
+    - echo OK
+
+build:
+  stage: build
+  image:
+    name: gcr.io/kaniko-project/executor:debug
+    entrypoint: [""]
+  script:
+    - mkdir -p /kaniko/.docker
+    - echo "{\"auths\":{\"${CI_REGISTRY}\":{\"auth\":\"$(printf "%s:%s" "${CI_REGISTRY_USER}" "${CI_REGISTRY_PASSWORD}" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
+    - >-
+      /kaniko/executor
+      --context "${CI_PROJECT_DIR}"
+      --dockerfile "${CI_PROJECT_DIR}/Dockerfile"
+      --destination "${CI_REGISTRY_IMAGE}:${CI_COMMIT_REF_SLUG}.${CI_PIPELINE_ID}"
+
+
+.deploy: &deploy
+  stage: deploy
+  image: bitnami/kubectl:1.22
+  before_script:
+    - export KUBECONFIG=/tmp/.kubeconfig
+    - kubectl config set-cluster k8s --insecure-skip-tls-verify=true --server=$K8S_API_URL
+    - kubectl config set-credentials ci --token=$(echo $K8S_CI_TOKEN | base64 --decode)
+    - kubectl config set-context ci --cluster=k8s --user=ci
+    - kubectl config use-context ci
+  script:
+    - sed -i "s,__IMAGE__,$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG.$CI_PIPELINE_ID,g" kube/deployment.yaml
+    - sed -i "s,<CHANGE ME>,$CI_ENVIRONMENT_NAME,g" kube/ingress.yaml
+    - kubectl apply -f kube/ --namespace $CI_ENVIRONMENT_NAME
+    - kubectl rollout status deployment/$CI_PROJECT_NAME --namespace $CI_ENVIRONMENT_NAME || (kubectl rollout undo deployment/$CI_PROJECT_NAME --namespace $CI_ENVIRONMENT_NAME && exit 1)
+
+deploy:stage:
+  <<: *deploy
+  environment:
+    name: stage
+  variables:
+    K8S_CI_TOKEN: $K8S_STAGE_CI_TOKEN
+  only:
+    - master
+
+deploy:prod:
+  <<: *deploy
+  environment:
+    name: prod
+  variables:
+    K8S_CI_TOKEN: $K8S_PROD_CI_TOKEN
+  only:
+    - master
+  when: manual
